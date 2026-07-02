@@ -63,15 +63,46 @@ async def lifespan(app: FastAPI):
         # break in confusing ways later — fail the startup, don't limp on.
         import pathlib
         migration_dir = pathlib.Path("migrations/versions")
-        for sql_file in sorted(migration_dir.glob("*.sql")):
-            sql = sql_file.read_text()
+        applied = 0
+        async with pool.acquire() as lock_conn:
+            # Serialize migrations across concurrent boots (advisory lock) and
+            # apply each file exactly once (schema_migrations ledger). The old
+            # re-run-everything-every-boot approach raced pg_class on restart
+            # ("duplicate key ... pg_class_relname_nsp_index") and rewrote DDL
+            # 41 files deep for no reason.
+            await lock_conn.execute("SELECT pg_advisory_lock(721001)")
             try:
-                async with pool.acquire() as conn:
-                    await conn.execute(sql)
-            except Exception as me:
-                logger.error("db_migration_failed", file=sql_file.name, error=str(me))
-                raise _MigrationError(f"Migration {sql_file.name} failed: {me}") from me
-        logger.info("db_migrations_applied")
+                await lock_conn.execute(
+                    """CREATE TABLE IF NOT EXISTS schema_migrations (
+                           filename   TEXT PRIMARY KEY,
+                           applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                       )"""
+                )
+                done = {
+                    r["filename"]
+                    for r in await lock_conn.fetch("SELECT filename FROM schema_migrations")
+                }
+                for sql_file in sorted(migration_dir.glob("*.sql")):
+                    if sql_file.name in done:
+                        continue
+                    sql = sql_file.read_text()
+                    try:
+                        await lock_conn.execute(sql)
+                        await lock_conn.execute(
+                            "INSERT INTO schema_migrations (filename) VALUES ($1) "
+                            "ON CONFLICT DO NOTHING",
+                            sql_file.name,
+                        )
+                        applied += 1
+                    except Exception as me:
+                        logger.error("db_migration_failed", file=sql_file.name, error=str(me))
+                        raise _MigrationError(f"Migration {sql_file.name} failed: {me}") from me
+            finally:
+                try:
+                    await lock_conn.execute("SELECT pg_advisory_unlock(721001)")
+                except Exception:
+                    pass
+        logger.info("db_migrations_applied", new=applied)
 
         # Upsert the superadmin account using the LIVE env password so the
         # credentials always match regardless of what hash is in 006b.sql.
