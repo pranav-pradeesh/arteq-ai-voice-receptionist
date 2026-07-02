@@ -16,19 +16,19 @@ import { TrialBanner } from "./trial-banner";
 import { Reveal } from "./reveal";
 import { cn } from "@/lib/utils";
 
-type Item = { href: string; label: string; icon: React.ElementType };
-const SECTIONS: { title: string; items: Item[]; superAdminOnly?: boolean }[] = [
+type Item = { href: string; label: string; icon: React.ElementType; notFor?: string[] };
+const SECTIONS: { title: string; items: Item[]; superAdminOnly?: boolean; notFor?: string[] }[] = [
   {
     title: "Operations",
     items: [
       { href: "/overview", label: "Overview", icon: LayoutDashboard },
       { href: "/calls", label: "Calls", icon: Phone },
-      { href: "/qa", label: "Call QA", icon: MessageSquareText },
-      { href: "/analytics", label: "Analytics", icon: BarChart3 },
+      { href: "/qa", label: "Call QA", icon: MessageSquareText, notFor: ["receptionist"] },
+      { href: "/analytics", label: "Analytics", icon: BarChart3, notFor: ["receptionist"] },
       { href: "/live", label: "Live", icon: Radio },
       { href: "/appointments", label: "Appointments", icon: CalendarCheck },
       { href: "/callbacks", label: "Callbacks", icon: PhoneCall },
-      { href: "/usage", label: "Usage & Cost", icon: Gauge },
+      { href: "/usage", label: "Usage & Cost", icon: Gauge, notFor: ["receptionist"] },
     ],
   },
   {
@@ -41,6 +41,7 @@ const SECTIONS: { title: string; items: Item[]; superAdminOnly?: boolean }[] = [
   },
   {
     title: "Configuration",
+    notFor: ["receptionist"],
     items: [
       { href: "/settings", label: "Settings", icon: Settings },
       { href: "/departments", label: "Departments", icon: Building2 },
@@ -153,7 +154,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Admin-only sections (Hospitals, Onboard, Tenants, Users) are visible only to
   // super_admins. The (app) layout already waits for an authenticated session
   // before rendering, so `role` is resolved by the time this runs.
-  const sections = SECTIONS.filter((s) => !s.superAdminOnly || role === "super_admin");
+  const sections = SECTIONS
+    .filter((s) => !s.superAdminOnly || role === "super_admin")
+    .filter((s) => !s.notFor || !role || !s.notFor.includes(role))
+    .map((s) => ({
+      ...s,
+      items: s.items.filter((it) => !it.notFor || !role || !it.notFor.includes(role)),
+    }));
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
   return (
