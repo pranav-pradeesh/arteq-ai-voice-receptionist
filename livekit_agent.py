@@ -2250,12 +2250,34 @@ async def entrypoint(ctx: JobContext) -> None:
                     allow_interruptions=False)
         except Exception:
             pass  # TTS may be the failing provider — transfer anyway
+        ok = False
         try:
             from src.services.livekit_sip import transfer_call_in_room
             ok = await transfer_call_in_room(room_name, rp, participant_name="Reception")
             _log.info(f"auto_handoff room={room_name} reason={reason} ok={ok}")
         except Exception as exc:
             _log.error(f"auto_handoff_failed room={room_name} err={exc}")
+        # Record the handoff with the tail of the conversation so reception /
+        # the dashboard can see what the caller needed (context transfer).
+        try:
+            tail_items = []
+            for item in list(session.history.items)[-12:]:
+                role = getattr(item, "role", "")
+                txt = getattr(item, "text_content", None) or ""
+                if role in ("user", "assistant") and txt:
+                    tail_items.append(f"{role}: {txt}")
+            from src.db.queries import get_pool as _gp
+            _pool = await _gp()
+            async with _pool.acquire() as _conn:
+                await _conn.execute(
+                    "INSERT INTO call_handoffs "
+                    "(hospital_id, call_id, room_name, reason, to_phone, transcript_tail, succeeded) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                    hospital_id or None, call_id, room_name, reason, rp,
+                    "\n".join(tail_items)[-4000:], ok,
+                )
+        except Exception as exc:
+            _log.warning(f"handoff_record_failed {exc}")
 
     @session.on("error")
     def _on_session_error(ev):

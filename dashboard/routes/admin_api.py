@@ -1118,6 +1118,22 @@ async def delete_faq(hospital_id: str, faq_id: str):
 
 # ── Call Logs ─────────────────────────────────────────────────────────────────
 
+@router.get("/hospitals/{hospital_id}/handoffs", dependencies=[Depends(_require_auth)])
+async def list_handoffs(hospital_id: str, limit: int = 50):
+    """Human-handoff ledger: who was transferred to reception, when and why —
+    with the conversation tail so staff have context."""
+    pool = await _db()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, call_id, room_name, reason, to_phone, transcript_tail,
+                      succeeded, created_at
+               FROM call_handoffs WHERE hospital_id = $1
+               ORDER BY created_at DESC LIMIT $2""",
+            hospital_id, min(limit, 200),
+        )
+    return [dict(r) for r in rows]
+
+
 @router.get("/hospitals/{hospital_id}/calls", dependencies=[Depends(_require_auth)])
 async def list_calls(hospital_id: str, limit: int = 50):
     pool = await _db()
