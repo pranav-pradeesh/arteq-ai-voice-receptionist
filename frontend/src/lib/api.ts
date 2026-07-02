@@ -14,8 +14,7 @@ import type {
   Patient, Booking, BookingStatus, PaymentMode, WhatsAppMessage,
   TrialStatus, DoctorAvailability, DoctorAvailabilityInfo, AppointmentEvent,
   DoctorProfile, DoctorAppointment, DoctorScheduleEntry, DoctorAvailabilityStatus,
-  UsageResponse, PlanUpdate,
-} from "./types";
+  UsageResponse, PlanUpdate, Handoff } from "./types";
 
 import { getSession } from "next-auth/react";
 
@@ -181,6 +180,7 @@ export const api = {
     put<Appointment>(`/hospitals/${hid}/appointments/${apptId}/status`, { status }),
   deleteAppointment: (hid: string, apptId: string) =>
     del<{ ok: boolean }>(`/hospitals/${hid}/appointments/${apptId}`),
+  listHandoffs: (hid: string) => get<Handoff[]>(`/hospitals/${hid}/handoffs`),
   listCallbacks: (hid: string, status?: string) => get<Callback[]>(`/hospitals/${hid}/callbacks${qs({ status })}`),
   updateCallbackStatus: (hid: string, id: string, status: string) => put<{ status: string }>(`/hospitals/${hid}/callbacks/${id}/status`, { status }),
   redialCallback: (hid: string, id: string) => post<{ status: string }>(`/hospitals/${hid}/callbacks/${id}/redial`),

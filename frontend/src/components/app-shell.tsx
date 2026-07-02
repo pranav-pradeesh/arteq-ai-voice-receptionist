@@ -28,6 +28,7 @@ const SECTIONS: { title: string; items: Item[]; superAdminOnly?: boolean; notFor
       { href: "/live", label: "Live", icon: Radio },
       { href: "/appointments", label: "Appointments", icon: CalendarCheck },
       { href: "/callbacks", label: "Callbacks", icon: PhoneCall },
+      { href: "/handoffs", label: "Handoffs", icon: PhoneCall },
       { href: "/usage", label: "Usage & Cost", icon: Gauge, notFor: ["receptionist"] },
     ],
   },

@@ -175,6 +175,17 @@ export interface Appointment {
 
 export type CallbackStatus = "pending" | "scheduled" | "completed" | "cancelled";
 
+export interface Handoff {
+  id: string;
+  call_id?: string | null;
+  room_name?: string | null;
+  reason: string;
+  to_phone?: string | null;
+  transcript_tail?: string | null;
+  succeeded?: boolean | null;
+  created_at: string;
+}
+
 export interface Callback {
   id: string;
   hospital_id: string;
