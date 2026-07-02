@@ -145,7 +145,7 @@ class UserOut(BaseModel):
 class CreateUserRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, description="Plain-text; will be bcrypt-hashed")
-    role: str = Field(..., description="One of: super_admin, tenant_admin, viewer")
+    role: str = Field(..., description="One of: super_admin, tenant_admin, receptionist, viewer")
     active: bool = True
     tenant_slugs: List[str] = Field(
         default_factory=list,
@@ -165,7 +165,7 @@ class UpdateUserRequest(BaseModel):
 # Role constants
 # ---------------------------------------------------------------------------
 
-VALID_ROLES = {"super_admin", "tenant_admin", "viewer", "doctor"}
+VALID_ROLES = {"super_admin", "tenant_admin", "receptionist", "viewer", "doctor"}
 
 
 # ---------------------------------------------------------------------------

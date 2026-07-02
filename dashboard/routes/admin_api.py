@@ -118,6 +118,14 @@ async def _resolve_scope(payload: dict) -> Optional[set[str]]:
     return {r["tenant_slug"] for r in rows}
 
 
+# Resources a receptionist may WRITE (day-to-day front-desk operations).
+# Everything else is read-only for receptionist and viewer roles.
+_RECEPTIONIST_WRITABLE = {
+    "appointments", "callbacks", "bookings", "patients", "doctor-patients",
+    "messages",
+}
+
+
 def _is_super(payload: dict) -> bool:
     return payload.get("sub") == "admin" or payload.get("role") == "super_admin"
 
@@ -153,6 +161,26 @@ async def _require_auth(
                 )
             if not slug or slug not in allowed:
                 raise HTTPException(status_code=403, detail="No access to this hospital")
+
+    # Role-based write control: viewer is read-only everywhere; receptionist
+    # writes only operational resources — never hospital config, billing,
+    # doctors, schedules or users.
+    role = payload.get("role") or ("super_admin" if payload.get("sub") == "admin" else "")
+    if role in ("viewer", "receptionist") and request.method not in ("GET", "HEAD", "OPTIONS"):
+        allowed_write = False
+        if role == "receptionist":
+            parts = [p for p in request.url.path.split("/") if p]
+            seg = ""
+            if "hospitals" in parts:
+                i = parts.index("hospitals")
+                if len(parts) > i + 2:
+                    seg = parts[i + 2]
+            elif parts:
+                seg = parts[-1]
+            allowed_write = seg in _RECEPTIONIST_WRITABLE
+        if not allowed_write:
+            raise HTTPException(status_code=403,
+                                detail="Your role does not allow this action")
     return payload
 
 
