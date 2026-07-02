@@ -89,84 +89,6 @@ async def delete_room(room_name: str) -> bool:
 
 # ── One-time provisioning ──────────────────────────────────────────────────────
 
-async def setup_sip_outbound_trunk_exotel() -> str:
-    """
-    Create Exotel SIP outbound trunk in LiveKit.
-    Returns the trunk ID — set it as LIVEKIT_SIP_EXOTEL_OUTBOUND_TRUNK_ID in env.
-
-    Exotel SIP hostname: sip.exotel.com (or region-specific; check Exotel dashboard).
-    Credentials: use EXOTEL_API_KEY + EXOTEL_API_TOKEN as SIP auth.
-    """
-    try:
-        from livekit import api as lk_api
-        lk = _lk()
-        trunk = await lk.sip.create_sip_outbound_trunk(
-            lk_api.CreateSIPOutboundTrunkRequest(
-                trunk=lk_api.SIPOutboundTrunkInfo(
-                    name="Exotel Outbound",
-                    address="sip.exotel.com",
-                    numbers=[settings.EXOTEL_PHONE_NUMBER],
-                    auth_username=settings.EXOTEL_API_KEY,
-                    auth_password=settings.EXOTEL_API_TOKEN,
-                    transport=lk_api.SIPTransport.SIP_TRANSPORT_TLS,
-                )
-            )
-        )
-        await lk.aclose()
-        logger.info("sip_exotel_outbound_trunk_created", trunk_id=trunk.sip_trunk_id)
-        return trunk.sip_trunk_id
-    except Exception as exc:
-        logger.error("sip_exotel_outbound_trunk_failed", error=str(exc))
-        return ""
-
-
-async def setup_hospital_inbound_exotel(
-    hospital_slug: str,
-    did_number: str,
-) -> tuple[str, str]:
-    """
-    Create a SIP inbound trunk + dispatch rule for one Exotel ExoPhone.
-    Returns (trunk_id, dispatch_rule_id) — store in the hospitals table.
-    """
-    if not hospital_slug or not did_number:
-        return "", ""
-    try:
-        from livekit import api as lk_api
-        lk = _lk()
-        trunk = await lk.sip.create_sip_inbound_trunk(
-            lk_api.CreateSIPInboundTrunkRequest(
-                trunk=lk_api.SIPInboundTrunkInfo(
-                    name=f"{hospital_slug} inbound (exotel)",
-                    numbers=[did_number],
-                    allowed_addresses=_EXOTEL_SIP_CIDRS,
-                    krisp_enabled=True,
-                )
-            )
-        )
-        rule = await lk.sip.create_sip_dispatch_rule(
-            lk_api.CreateSIPDispatchRuleRequest(
-                trunk_ids=[trunk.sip_trunk_id],
-                rule=lk_api.SIPDispatchRule(
-                    dispatch_rule_individual=lk_api.SIPDispatchRuleIndividual(
-                        room_prefix=f"{hospital_slug}-call-",
-                    )
-                ),
-            )
-        )
-        await lk.aclose()
-        logger.info(
-            "sip_exotel_inbound_configured",
-            slug=hospital_slug,
-            did=did_number[-4:],
-            trunk_id=trunk.sip_trunk_id,
-            rule_id=rule.sip_dispatch_rule_id,
-        )
-        return trunk.sip_trunk_id, rule.sip_dispatch_rule_id
-    except Exception as exc:
-        logger.error("sip_exotel_inbound_setup_failed", slug=hospital_slug, error=str(exc))
-        return "", ""
-
-
 async def setup_sip_outbound_trunk() -> str:
     """
     Create (or return existing) Plivo SIP outbound trunk in LiveKit.
@@ -252,102 +174,14 @@ async def dial_outbound(
     context: dict[str, Any],
     carrier: str = "auto",
 ) -> str:
-    """
-    Create a LiveKit room then dial the patient via SIP.
+    """Legacy Plivo/Exotel outbound was removed — Vobiz is the only carrier.
+    Kept as a stub so a stale TELEPHONY_CARRIER value fails loudly, not with
+    an ImportError."""
+    logger.error("legacy_carrier_removed",
+                 hint="Vobiz is the only telephony carrier; unset TELEPHONY_CARRIER")
+    return ""
 
-    carrier: "plivo" | "exotel" | "exotel_ws" | "auto" (auto picks Exotel if its
-    trunk is set, falls back to Plivo). "exotel_ws" places the call over the
-    Exotel Voicebot WebSocket instead of SIP — Exotel dials and streams audio
-    to our bridge, which joins the LiveKit room we pre-create here.
-    Returns the room name on success, "" on failure.
-    """
-    # Exotel WebSocket-streamed outbound: we pre-create the room (with context +
-    # agent dispatch), then have Exotel dial the patient and stream to our WS.
-    if carrier == "exotel_ws":
-        room_name = await precreate_exotel_ws_room(hospital_slug, context)
-        if not room_name:
-            return ""
-        from src.services.exotel_provisioning import connect_call_to_voicebot
-        ok = await connect_call_to_voicebot(patient_phone, room_name)
-        if not ok:
-            await delete_room(room_name)
-            return ""
-        logger.info("outbound_exotel_ws_dialed", room=room_name, patient=patient_phone[-4:])
-        return room_name
 
-    exotel_trunk = settings.LIVEKIT_SIP_EXOTEL_OUTBOUND_TRUNK_ID
-    plivo_trunk = settings.LIVEKIT_SIP_OUTBOUND_TRUNK_ID
-
-    if carrier == "exotel":
-        trunk_id = exotel_trunk
-        sip_proxy = "sip.exotel.com"
-    elif carrier == "plivo":
-        trunk_id = plivo_trunk
-        sip_proxy = "sip.plivo.com"
-    else:  # auto
-        if exotel_trunk:
-            trunk_id = exotel_trunk
-            sip_proxy = "sip.exotel.com"
-        else:
-            trunk_id = plivo_trunk
-            sip_proxy = "sip.plivo.com"
-
-    if not trunk_id:
-        logger.error(
-            "livekit_sip_outbound_not_configured",
-            hint="Run POST /admin/sip/setup (Plivo) or /admin/sip/exotel/setup, then set the trunk ID env var",
-        )
-        return ""
-
-    if not settings.LIVEKIT_URL or not settings.LIVEKIT_API_KEY:
-        logger.error("livekit_not_configured")
-        return ""
-
-    room_name = f"{hospital_slug}-call-{uuid.uuid4().hex[:8]}"
-
-    lk = None
-    try:
-        from livekit import api as lk_api
-        lk = _lk()
-
-        # Room carries the outbound context so the agent can read it from metadata
-        await lk.room.create_room(
-            lk_api.CreateRoomRequest(
-                name=room_name,
-                metadata=json.dumps(context),
-                empty_timeout=90,   # destroy if agent doesn't join within 90 s
-                max_participants=3,
-            )
-        )
-
-        phone = patient_phone if patient_phone.startswith("+") else f"+{patient_phone}"
-        await lk.sip.create_sip_participant(
-            lk_api.CreateSIPParticipantRequest(
-                sip_trunk_id=trunk_id,
-                sip_call_to=phone,
-                room_name=room_name,
-                participant_identity=f"patient-{phone[-4:]}",
-                participant_name="Patient",
-                play_ringtone=True,
-                wait_until_answered=False,
-            )
-        )
-
-        logger.info(
-            "outbound_sip_dialed",
-            patient=phone[-4:],
-            room=room_name,
-            carrier=sip_proxy.split(".")[1],
-            call_type=context.get("call_type"),
-        )
-        return room_name
-
-    except Exception as exc:
-        logger.error("outbound_sip_failed", error=str(exc), patient=patient_phone[-4:])
-        return ""
-    finally:
-        if lk is not None:
-            await lk.aclose()
 
 
 # ── Runtime: call transfer ────────────────────────────────────────────────────
@@ -477,42 +311,6 @@ def get_voicebot_exoml(slug: str, room: str = "", extra_params: dict[str, str] |
         "  </Connect>\n"
         "</Response>"
     )
-
-
-async def precreate_exotel_ws_room(hospital_slug: str, context: dict[str, Any]) -> str:
-    """
-    Create a LiveKit room (with outbound context + agent dispatch) for an
-    Exotel WebSocket-streamed *outbound* call, returning the room name.
-
-    The room is created up front so its name can be handed to Exotel as a
-    custom parameter; the bridge then joins it when Exotel connects the WS.
-    Returns "" on failure.
-    """
-    if not settings.LIVEKIT_URL or not settings.LIVEKIT_API_KEY:
-        logger.error("livekit_not_configured")
-        return ""
-    room_name = f"{hospital_slug}-call-{uuid.uuid4().hex[:8]}"
-    lk = None
-    try:
-        from livekit import api as lk_api
-        lk = _lk()
-        await lk.room.create_room(
-            lk_api.CreateRoomRequest(
-                name=room_name,
-                metadata=json.dumps(context),
-                empty_timeout=90,
-                max_participants=3,
-                agents=[lk_api.RoomAgentDispatch(agent_name=settings.LIVEKIT_DISPATCH_NAME)],
-            )
-        )
-        logger.info("exotel_ws_room_precreated", room=room_name, slug=hospital_slug)
-        return room_name
-    except Exception as exc:
-        logger.error("exotel_ws_room_precreate_failed", slug=hospital_slug, error=str(exc))
-        return ""
-    finally:
-        if lk is not None:
-            await lk.aclose()
 
 
 # ── Runtime: inbound PCML ─────────────────────────────────────────────────────

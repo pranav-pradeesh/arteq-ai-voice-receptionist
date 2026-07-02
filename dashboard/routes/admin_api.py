@@ -1825,25 +1825,7 @@ async def hospital_wizard(body: HospitalWizardIn):
 
     _invalidate(hospital_id)
 
-    plivo_number = None
-    if body.provision_plivo_number:
-        try:
-            from src.services.plivo_provisioning import provision_number_for_hospital
-            plivo_number = await provision_number_for_hospital(slug)
-            if plivo_number:
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE hospitals SET plivo_number=$1 WHERE id=$2",
-                        plivo_number, hospital_id,
-                    )
-                try:
-                    from src.services.livekit_sip import setup_hospital_inbound
-                    await setup_hospital_inbound(slug, plivo_number)
-                except Exception as sip_exc:
-                    logger.warning("wizard_sip_setup_failed", error=str(sip_exc))
-        except Exception as e:
-            logger.warning("wizard_plivo_provision_failed", error=str(e))
-
+    plivo_number = None  # Plivo removed — Vobiz is the only carrier
     return {
         "hospital_id": hospital_id,
         "slug": slug,
@@ -1853,50 +1835,6 @@ async def hospital_wizard(body: HospitalWizardIn):
         "emergency_contacts": len(body.emergency_contacts),
         "status": "created",
         "bsnl_forward_code": f"**21*{plivo_number}#" if plivo_number else "",
-    }
-
-
-@router.post("/hospitals/{hospital_id}/provision-number", dependencies=[Depends(_require_auth)])
-async def provision_plivo_number(hospital_id: str):
-    """Buy and configure a Plivo number for an existing hospital."""
-    pool = await _db()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT slug, plivo_number FROM hospitals WHERE id=$1", hospital_id
-        )
-    if not row:
-        raise HTTPException(status_code=404, detail="Hospital not found")
-    if row["plivo_number"]:
-        return {"plivo_number": row["plivo_number"], "status": "already_provisioned"}
-
-    slug = row["slug"]
-    if not slug:
-        raise HTTPException(status_code=400, detail="Hospital has no slug — update it first")
-
-    from src.services.plivo_provisioning import provision_number_for_hospital
-    plivo_number = await provision_number_for_hospital(slug)
-    if not plivo_number:
-        raise HTTPException(status_code=502, detail="Could not provision Plivo number")
-
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE hospitals SET plivo_number=$1 WHERE id=$2", plivo_number, hospital_id
-        )
-    _invalidate(hospital_id)
-
-    async def _setup_sip(s: str, num: str) -> None:
-        try:
-            from src.services.livekit_sip import setup_hospital_inbound
-            await setup_hospital_inbound(s, num)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("provision_sip_setup_failed", error=str(exc))
-
-    asyncio.create_task(_setup_sip(slug, plivo_number))
-
-    return {
-        "plivo_number": plivo_number,
-        "bsnl_forward_code": f"**21*{plivo_number}#",
-        "status": "provisioned",
     }
 
 
@@ -2019,79 +1957,6 @@ async def sip_setup():
             "2. Get your LiveKit SIP host from the LiveKit Cloud dashboard → SIP → Inbound Trunks",
             "3. Set LIVEKIT_SIP_HOST=<your-sip-host> in Render env vars",
             "4. Redeploy both arteq-voice-agent and arteq-livekit-agent",
-        ],
-    }
-
-
-@router.post("/sip/exotel/setup", dependencies=[Depends(_require_super)])
-async def sip_exotel_setup():
-    """
-    One-time Exotel SIP trunk provisioning. Run after first deployment with Exotel.
-
-    Creates:
-    • One Exotel SIP outbound trunk in LiveKit (for reminder/confirmation calls)
-    • One SIP inbound trunk + dispatch rule per hospital with an Exotel number
-
-    Returns the outbound trunk ID. Set it as LIVEKIT_SIP_EXOTEL_OUTBOUND_TRUNK_ID
-    in Render environment variables, then redeploy.
-
-    Requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
-    EXOTEL_API_KEY, EXOTEL_API_TOKEN, EXOTEL_PHONE_NUMBER.
-    """
-    missing = [
-        k for k in (
-            "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
-            "EXOTEL_API_KEY", "EXOTEL_API_TOKEN", "EXOTEL_PHONE_NUMBER",
-        )
-        if not getattr(settings, k, "")
-    ]
-    if missing:
-        return {
-            "status": "not_configured",
-            "missing_env_vars": missing,
-            "message": "Set the listed environment variables, then call this endpoint again.",
-        }
-
-    try:
-        from src.services.livekit_sip import (
-            setup_sip_outbound_trunk_exotel,
-            setup_hospital_inbound_exotel,
-        )
-    except ImportError:
-        raise HTTPException(status_code=501, detail="livekit package not installed")
-
-    outbound_trunk_id = await setup_sip_outbound_trunk_exotel()
-
-    pool = await _db()
-    async with pool.acquire() as conn:
-        hospitals = await conn.fetch(
-            "SELECT id, slug, exotel_number FROM hospitals "
-            "WHERE exotel_number IS NOT NULL AND exotel_number != '' "
-            "ORDER BY created_at"
-        )
-
-    inbound = []
-    for h in hospitals:
-        slug = h["slug"] or str(h["id"])
-        trunk_id, rule_id = await setup_hospital_inbound_exotel(slug, h["exotel_number"])
-        inbound.append({
-            "hospital_id": str(h["id"]),
-            "slug": slug,
-            "exotel_number": h["exotel_number"],
-            "sip_trunk_id": trunk_id,
-            "dispatch_rule_id": rule_id,
-            "ok": bool(trunk_id),
-        })
-
-    return {
-        "outbound_trunk_id": outbound_trunk_id,
-        "inbound_trunks": inbound,
-        "sip_host": settings.LIVEKIT_SIP_HOST or "(set LIVEKIT_SIP_HOST from LiveKit dashboard)",
-        "next_steps": [
-            f"1. Set LIVEKIT_SIP_EXOTEL_OUTBOUND_TRUNK_ID={outbound_trunk_id} in Render env vars",
-            "2. Configure each hospital's ExoPhone VoiceUrl to:",
-            f"   POST {settings.PUBLIC_BASE_URL}/api/v1/call/inbound/exotel/<EXOTEL_WEBHOOK_TOKEN>/<slug>",
-            "3. Redeploy both arteq-voice-agent and arteq-livekit-agent",
         ],
     }
 
@@ -3679,3 +3544,17 @@ async def get_call_recording(hospital_id: str, call_id: str, payload: dict = Dep
     except Exception:
         pass
     return FileResponse(path, media_type="audio/ogg", filename=fname)
+
+
+@router.post("/hospitals/{hospital_id}/provision-number", dependencies=[Depends(_require_auth)])
+async def provision_plivo_number(hospital_id: str):
+    """Removed: Plivo provisioning. Vobiz is the only telephony carrier."""
+    raise HTTPException(status_code=410, detail="Plivo support removed — telephony is Vobiz-only")
+
+
+@router.post("/sip/exotel/setup", dependencies=[Depends(_require_super)])
+async def sip_exotel_setup():
+    """Removed: Exotel SIP setup. Vobiz is the only telephony carrier."""
+    raise HTTPException(status_code=410, detail="Exotel support removed — telephony is Vobiz-only")
+
+
