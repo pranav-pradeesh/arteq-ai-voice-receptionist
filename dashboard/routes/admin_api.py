@@ -181,6 +181,30 @@ async def _require_auth(
         if not allowed_write:
             raise HTTPException(status_code=403,
                                 detail="Your role does not allow this action")
+
+    # Audit trail: record every authenticated MUTATING request (who/what/where).
+    # Fire-and-forget — an audit-write failure must never block the request.
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        import asyncio as _aio
+
+        async def _audit():
+            try:
+                pool = await _db()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "INSERT INTO audit_log (actor, role, method, path, hospital_id, ip) "
+                        "VALUES ($1,$2,$3,$4,$5,$6)",
+                        payload.get("sub") or "?",
+                        payload.get("role") or ("super_admin" if payload.get("sub") == "admin" else None),
+                        request.method,
+                        request.url.path[:500],
+                        hospital_id or None,
+                        (request.client.host if request.client else None),
+                    )
+            except Exception:
+                pass
+
+        _aio.ensure_future(_audit())
     return payload
 
 
