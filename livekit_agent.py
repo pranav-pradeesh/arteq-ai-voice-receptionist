@@ -1205,6 +1205,201 @@ def _build_greeting(hospital_ctx, outbound_context: Optional[dict],
 
 
 # ==============================================================================
+
+# ── Doctor-name hallucination guard ───────────────────────────────────────────
+# The system prompt forbids inventing doctor names, but the LLM has violated it
+# live (spoke fake doctors + slot times for Neurology). Prompt rules are advice;
+# this guard is enforcement: every doctor name the agent is ABOUT to speak is
+# checked against the hospital's real roster (Latin + Malayalam-transliterated).
+# An unknown name blocks the rest of the reply and substitutes a safe line.
+
+_ML_CHAR_RE = re.compile(r"[\u0d00-\u0d7f]")
+
+_ML_V  = {"അ": "a", "ആ": "aa", "ഇ": "i", "ഈ": "i", "ഉ": "u", "ഊ": "u",
+          "ഋ": "ri", "എ": "e", "ഏ": "e", "ഐ": "ai", "ഒ": "o", "ഓ": "o", "ഔ": "au"}
+_ML_C  = {"ക": "k", "ഖ": "kh", "ഗ": "g", "ഘ": "gh", "ങ": "ng", "ച": "ch",
+          "ഛ": "ch", "ജ": "j", "ഝ": "jh", "ഞ": "nj", "ട": "t", "ഠ": "t",
+          "ഡ": "d", "ഢ": "d", "ണ": "n", "ത": "th", "ഥ": "th", "ദ": "d",
+          "ധ": "dh", "ന": "n", "പ": "p", "ഫ": "f", "ബ": "b", "ഭ": "bh",
+          "മ": "m", "യ": "y", "ര": "r", "ല": "l", "വ": "v", "ശ": "sh",
+          "ഷ": "sh", "സ": "s", "ഹ": "h", "ള": "l", "ഴ": "zh", "റ": "r"}
+_ML_S  = {"ാ": "a", "ി": "i", "ീ": "i", "ു": "u", "ൂ": "u", "ൃ": "ri",
+          "െ": "e", "േ": "e", "ൈ": "ai", "ൊ": "o", "ോ": "o", "ൌ": "au", "ൗ": "au"}
+_ML_CH = {"ൻ": "n", "ർ": "r", "ൽ": "l", "ൾ": "l", "ൺ": "n", "ം": "m"}
+
+
+def _ml_word_to_latin(w: str) -> str:
+    """Rough Malayalam→Latin transliteration, good enough for fuzzy roster match."""
+    out = []
+    n = len(w)
+    for i, ch in enumerate(w):
+        if ch in _ML_C:
+            out.append(_ML_C[ch])
+            nxt = w[i + 1] if i + 1 < n else ""
+            if nxt not in _ML_S and nxt != "\u0d4d" and nxt not in _ML_CH:
+                out.append("a")  # inherent vowel
+        elif ch in _ML_V:
+            out.append(_ML_V[ch])
+        elif ch in _ML_S:
+            out.append(_ML_S[ch])
+        elif ch in _ML_CH:
+            out.append(_ML_CH[ch])
+        # virama and anything else: skip
+    return "".join(out)
+
+
+# Words that legitimately follow "ഡോക്ടർ/Dr." without being a name. Malayalam
+# entries are kept in the ORIGINAL script and transliterated at import time by
+# the SAME _ml_word_to_latin used on spoken tokens — guaranteed consistency.
+_NAME_STOPWORDS_RAW = {
+    # Malayalam generic continuations ("the doctor is/will/…")
+    "ആണ്", "ആണോ", "ഉണ്ട്", "ഉണ്ടോ", "ഇല്ല", "ഇല്ലേ", "വരും", "വരുമോ",
+    "വന്നു", "വിളിക്കും", "വിളിച്ചു", "കാണും", "കാണാം", "കാണാൻ", "ചെയ്യും",
+    "ലഭ്യമാണ്", "ലഭ്യമല്ല", "നിശ്ചയപ്രകാരം", "ഇന്ന്", "നാളെ", "ഇപ്പോൾ",
+    "തന്നെ", "എത്തും", "നോക്കട്ടെ", "പറഞ്ഞു", "പറയും", "ഏത്", "ഏതാണ്",
+    "ആരാണ്", "ആരെ", "എന്ന", "ഏതൊക്കെ", "ആരൊക്കെ", "നിങ്ങളെ", "നിങ്ങൾക്ക്",
+    "അവിടെ", "ഇവിടെ", "ഉടനെ", "ഒന്നു", "ഒന്ന്", "ഫ്രീ", "സമയം", "മണിക്ക്",
+    # English
+    "is", "are", "will", "would", "can", "could", "has", "have", "was",
+    "the", "a", "an", "who", "which", "what", "available", "free", "today",
+    "tomorrow", "not", "no", "on", "at", "and", "or", "for", "your", "our",
+    "here", "there", "now", "sir", "madam", "list", "visit",
+}
+_NAME_STOPWORDS = {
+    (_ml_word_to_latin(w) if _ML_CHAR_RE.search(w) else w)
+    for w in _NAME_STOPWORDS_RAW
+}
+
+_ML_NAME_SUFFIXES = ("ിന്റെ", "ിനോട്", "ുമായി", "ിനും", "ിനെ", "ിന്", "ുടെ", "ോട്", "ിന")
+
+_DR_MARKER_RE = re.compile(r"(?:\b[Dd][Rr]\.?\s+|\b[Dd]octor\s+|ഡോക്ടർ\s+|ഡോ\.?\s+)")
+
+_GUARD_TOKEN_RE = re.compile(r"[^\s,\.!\?;:\(\)—…]+")
+
+
+def _build_roster_tokens(hospital_ctx) -> frozenset:
+    """Latin-normalized name tokens for every doctor of this hospital."""
+    toks = set()
+    for d in (getattr(hospital_ctx, "doctors", None) or []):
+        for field in ("name", "name_ml"):
+            if isinstance(d, dict):
+                nm = d.get(field) or ""
+            else:
+                nm = getattr(d, field, "") or ""
+            nm = nm.replace("Dr.", " ").replace("dr.", " ").replace("Dr ", " ")
+            for t in _GUARD_TOKEN_RE.findall(nm):
+                t = t.strip(".,-").lower()
+                if _ML_CHAR_RE.search(t):
+                    t = _ml_word_to_latin(t)
+                if len(t) >= 3:
+                    toks.add(t)
+    return frozenset(toks)
+
+
+class _RosterGuard:
+    """Streaming scanner: holds text after a Dr-marker until the following name
+    token(s) are complete, validates them against the roster, then either
+    releases the text or blocks the remainder of the reply."""
+
+    SAFE_ML = (" ക്ഷമിക്കണം, ആ ഡോക്ടറുടെ കാര്യം എനിക്ക് ഇപ്പോൾ ഉറപ്പില്ല. "
+               "നമ്മുടെ ഡോക്ടർമാരുടെ ലിസ്റ്റ് ഒന്ന് നോക്കിയിട്ട് കൃത്യമായി പറയാം, ട്ടോ.")
+    SAFE_EN = (" Sorry, I'm not sure about that doctor — "
+               "let me check our actual doctor list and tell you correctly.")
+
+    def __init__(self, roster_tokens: frozenset, lang: str = "ml-IN"):
+        self.roster = roster_tokens
+        self.lang = lang or "ml-IN"
+        self.buf = ""
+        self.blocked = False
+        self.blocked_name = ""
+
+    def _norm(self, tok: str) -> str:
+        tok = tok.strip().strip(".,!?;:()\"'—-").lower()
+        for suf in _ML_NAME_SUFFIXES:
+            if tok.endswith(suf) and len(tok) > len(suf) + 1:
+                tok = tok[: -len(suf)]
+                break
+        if _ML_CHAR_RE.search(tok):
+            tok = _ml_word_to_latin(tok)
+        return tok
+
+    def _tok_ok(self, tok: str) -> bool:
+        if tok in self.roster:
+            return True
+        import difflib as _difflib
+        for rt in self.roster:
+            if len(tok) >= 4 and (rt.startswith(tok) or tok.startswith(rt)):
+                return True
+            if _difflib.SequenceMatcher(None, tok, rt).ratio() >= 0.72:
+                return True
+        return False
+
+    def feed(self, chunk: str, final: bool = False) -> str:
+        """Feed a stream chunk; returns the text that is safe to speak now.
+        After a block, everything further is swallowed (safe line already sent)."""
+        if self.blocked:
+            return ""
+        self.buf += chunk
+        out = []
+        while not self.blocked:
+            m = _DR_MARKER_RE.search(self.buf)
+            if not m:
+                if final:
+                    out.append(self.buf)
+                    self.buf = ""
+                else:
+                    keep = 14  # possible partial marker at the tail
+                    if len(self.buf) > keep:
+                        out.append(self.buf[:-keep])
+                        self.buf = self.buf[-keep:]
+                break
+            rest = self.buf[m.end():]
+            toks = list(_GUARD_TOKEN_RE.finditer(rest))
+            verdict = None
+            release_end = m.end()
+            for tm in toks[:3]:
+                complete = final or tm.end() < len(rest)
+                if not complete:
+                    verdict = "wait"
+                    break
+                norm = self._norm(tm.group(0))
+                if len(norm) < 2:            # initial like "P." — look further
+                    release_end = m.end() + tm.end()
+                    continue
+                if norm in _NAME_STOPWORDS:  # generic "the doctor is…" use
+                    verdict = "pass"
+                    release_end = m.end()
+                    break
+                if self._tok_ok(norm):
+                    verdict = "pass"
+                    release_end = m.end() + tm.end()
+                else:
+                    verdict = "block"
+                    self.blocked_name = tm.group(0)
+                break
+            else:  # ran out of tokens (only initials / nothing yet)
+                if toks:
+                    verdict = "pass"
+                    release_end = m.end() + toks[min(2, len(toks) - 1)].end()
+                elif final:
+                    verdict = "pass"
+                else:
+                    verdict = "wait"
+            if verdict == "wait":
+                out.append(self.buf[: m.start()])
+                self.buf = self.buf[m.start():]
+                break
+            if verdict == "block":
+                self.blocked = True
+                out.append(self.buf[: m.start()])
+                out.append(self.SAFE_ML if self.lang.startswith("ml") else self.SAFE_EN)
+                self.buf = ""
+                break
+            out.append(self.buf[:release_end])
+            self.buf = self.buf[release_end:]
+        return "".join(out)
+
+
 # Agent class — one per call session
 # ==============================================================================
 
@@ -1510,6 +1705,35 @@ class HospitalVoiceAgent(Agent):
         so the repeat-utterance handler in on_user_turn_completed can replay it
         without a new LLM round-trip.
         """
+        # Hallucination guard: validate every doctor name about to be spoken
+        # against this hospital's real roster (built once per call, cached).
+        guard = None
+        try:
+            _rt = self.session.userdata.get("_roster_tokens")
+            if _rt is None:
+                _hc = self.session.userdata.get("hospital_ctx")
+                _rt = _build_roster_tokens(_hc) if _hc is not None else frozenset()
+                self.session.userdata["_roster_tokens"] = _rt
+            if _rt:
+                guard = _RosterGuard(_rt, self._agent_language)
+        except Exception:
+            guard = None
+
+        def _guard_pass(t: str, final: bool = False) -> str:
+            if guard is None:
+                return t
+            t = guard.feed(t, final=final)
+            if guard.blocked and guard.blocked_name:
+                _log.warning(f"hallucination_blocked name={guard.blocked_name!r} "
+                             f"call={self._call_id}")
+                try:
+                    self.session.userdata["hallucination_blocks"] = (
+                        self.session.userdata.get("hallucination_blocks", 0) + 1)
+                except Exception:
+                    pass
+                guard.blocked_name = ""   # log once per block
+            return t
+
         async def _clean():
             full_text = ""
             buf = ""
@@ -1518,9 +1742,12 @@ class HospitalVoiceAgent(Agent):
                 buf = _TOOL_SYNTAX_COMPLETE_RE.sub("", buf)   # drop closed blocks
                 emit, buf = _split_safe(buf)                   # hold only tag-prefix tail
                 if emit:
+                    emit = _guard_pass(emit)
+                if emit:
                     full_text += emit
                     yield emit
             tail = _strip_tool_syntax(buf)                     # flush any unterminated tail
+            tail = _guard_pass(tail, final=True)
             if tail:
                 full_text += tail
                 yield tail
@@ -1992,6 +2219,67 @@ async def entrypoint(ctx: JobContext) -> None:
     # Perceived-latency meter: averages EOU + LLM TTFT + TTS TTFB across the call.
     meter = _LatencyMeter()
     session.on("conversation_item_added", meter.on_item)
+
+    # ── Provider-failure resilience (never dead-air) ──────────────────────────
+    # Sarvam running out of credits used to close the session mid-call: the
+    # patient heard silence until they hung up. Per livekit-agents error
+    # semantics: LLM/TTS are recreated per response (safe to mark recoverable);
+    # STT persists, so the agent must be reset to restart its stream. After 3
+    # provider errors in one call we stop fighting and hand the caller to a
+    # human (reception) instead of risking more dead air.
+    _prov = {"errors": 0, "handoff": False}
+
+    async def _handoff_to_reception(reason: str) -> None:
+        if _prov["handoff"]:
+            return
+        _prov["handoff"] = True
+        rp = (getattr(hospital_ctx, "reception_phone", "") or "").strip() if hospital_ctx else ""
+        if not rp:
+            _log.error(f"auto_handoff_no_reception_phone room={room_name} reason={reason}")
+            return
+        try:
+            if (agent_language or "ml-IN").startswith("ml"):
+                await session.say(
+                    "ക്ഷമിക്കണം, ഒരു ചെറിയ സാങ്കേതിക തടസ്സം ഉണ്ട്. "
+                    "ഞാൻ റിസപ്ഷനിലേക്ക് കണക്റ്റ് ചെയ്യാം, ഒന്ന് ഹോൾഡ് ചെയ്യൂ.",
+                    allow_interruptions=False)
+            else:
+                await session.say(
+                    "Sorry, we are having a small technical issue. "
+                    "Let me connect you to our reception — please hold.",
+                    allow_interruptions=False)
+        except Exception:
+            pass  # TTS may be the failing provider — transfer anyway
+        try:
+            from src.services.livekit_sip import transfer_call_in_room
+            ok = await transfer_call_in_room(room_name, rp, participant_name="Reception")
+            _log.info(f"auto_handoff room={room_name} reason={reason} ok={ok}")
+        except Exception as exc:
+            _log.error(f"auto_handoff_failed room={room_name} err={exc}")
+
+    @session.on("error")
+    def _on_session_error(ev):
+        try:
+            err = getattr(ev, "error", None)
+            src = getattr(ev, "source", None)
+            _log.warning(f"provider_error src={type(src).__name__} "
+                         f"recoverable={getattr(err, 'recoverable', None)} "
+                         f"err={err} room={room_name}")
+            _prov["errors"] += 1
+            if err is not None and not getattr(err, "recoverable", False):
+                from livekit.agents import stt as _stt_m, tts as _tts_m, llm as _llm_m
+                if isinstance(src, (_tts_m.TTS, _llm_m.LLM)):
+                    err.recoverable = True     # recreated per response — continue
+                elif isinstance(src, _stt_m.STT):
+                    try:
+                        session.update_agent(session.current_agent)  # restart STT stream
+                        err.recoverable = True
+                    except Exception:
+                        pass
+            if _prov["errors"] >= 3:
+                asyncio.create_task(_handoff_to_reception("provider_failure"))
+        except Exception as exc:
+            _log.error(f"session_error_handler_failed {exc}")
 
     # Track whether Arya is currently speaking, and when she last FINISHED speaking
     # (entered the listening state). The inactivity watchdog uses this so the
