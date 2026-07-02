@@ -9,7 +9,9 @@ def test_settings_import():
     from src.config.settings import settings
     assert settings.AGENT_NAME == "Arya"
     assert settings.DEFAULT_LANGUAGE == "ml-IN"
-    assert settings.HOSPITAL_ID == "00000000-0000-0000-0000-000000000001"
+    # HOSPITAL_ID is env-configured per deployment — assert shape, not value
+    import uuid
+    uuid.UUID(settings.HOSPITAL_ID)
 
 
 def test_build_greeting_text():
