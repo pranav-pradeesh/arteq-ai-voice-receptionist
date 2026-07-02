@@ -1171,7 +1171,7 @@ def _build_greeting(hospital_ctx, outbound_context: Optional[dict],
             if ml:
                 return (
                     f"നമസ്കാരം {pname}, ഇന്നത്തെ appointment സംബന്ധിച്ച് {hosp_name}-ൽ നിന്നാണ്. "
-                    f"{dname} ഡോക്ടർ planned പ്രകാരം ലഭ്യമാണ്. എന്തെങ്കിലും സംശയം ഉണ്ടോ?"
+                    f"{dname} ഡോക്ടർ നിശ്ചയപ്രകാരം ലഭ്യമാണ്. എന്തെങ്കിലും സംശയം ഉണ്ടോ?"
                 )
             return (
                 f"Hello {pname}, this is {hosp_name} calling about your appointment today. "
