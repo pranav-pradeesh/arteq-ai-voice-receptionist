@@ -42,6 +42,18 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("arteq_starting", env=settings.ENV)
 
+    # Optional error tracking — no-op unless SENTRY_DSN is set in the env.
+    import os as _os
+    _dsn = _os.environ.get("SENTRY_DSN", "").strip()
+    if _dsn:
+        try:
+            import sentry_sdk
+            sentry_sdk.init(dsn=_dsn, environment=settings.ENV,
+                            traces_sample_rate=0.05)
+            logger.info("sentry_enabled")
+        except Exception as _se:
+            logger.warning("sentry_init_failed", error=str(_se))
+
     if "localhost" in settings.PUBLIC_BASE_URL or "localhost" in settings.PUBLIC_WS_URL:
         logger.warning(
             "misconfigured_public_urls",

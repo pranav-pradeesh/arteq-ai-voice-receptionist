@@ -63,3 +63,4 @@ ruff==0.15.15
 bcrypt==4.2.1
 email-validator==2.2.0
 redis==5.0.8
+sentry-sdk[fastapi]>=2.0,<3
