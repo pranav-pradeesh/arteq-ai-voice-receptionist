@@ -1254,3 +1254,69 @@ async def write_call_feedback(
     except Exception as e:
         import logging
         logging.error(f"call_feedback write failed: {e}")
+async def enqueue_same_day_2h_reminder(
+    appointment_id: str,
+    hospital_id: str,
+    phone: str,
+    patient_name: str,
+    doctor_name: str,
+    slot_time: datetime,
+    tenant_slug: str = "default",
+) -> bool:
+    """Enqueue a reminder_2h outbound call for a same-day appointment booked via agent.
+
+    Fires when: slot is today (IST), remind_2h_enabled on the hospital, and
+    the 2h-before window is still in the future. Idempotent — skips if a
+    pending row already exists. Returns True if a new row was inserted.
+    """
+    from datetime import timedelta, timezone
+    IST = pytz.timezone("Asia/Kolkata")
+    now_utc = datetime.now(timezone.utc)
+    slot_ist = slot_time.astimezone(IST) if slot_time.tzinfo else IST.localize(slot_time)
+    now_ist = now_utc.astimezone(IST)
+
+    # Only act on today's appointments
+    if slot_ist.date() != now_ist.date():
+        return False
+
+    scheduled_at = slot_time - timedelta(hours=2)
+    if scheduled_at.tzinfo is None:
+        scheduled_at = IST.localize(scheduled_at).astimezone(timezone.utc)
+    if scheduled_at <= now_utc:
+        return False  # 2h window already passed
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        enabled = await conn.fetchval(
+            "SELECT remind_2h_enabled FROM hospitals WHERE id=$1",
+            _uuid_mod.UUID(hospital_id),
+        )
+        if not enabled:
+            return False
+
+        already = await conn.fetchval(
+            """SELECT 1 FROM outbound_call_queue
+               WHERE appointment_id=$1 AND call_type='reminder_2h' AND status='pending'""",
+            _uuid_mod.UUID(appointment_id),
+        )
+        if already:
+            return False
+
+        await conn.execute(
+            """INSERT INTO outbound_call_queue
+                 (hospital_id, appointment_id, call_type, phone, patient_name,
+                  context_json, scheduled_at, tenant_slug)
+               VALUES ($1,$2,'reminder_2h',$3,$4,$5::jsonb,$6,$7)""",
+            _uuid_mod.UUID(hospital_id),
+            _uuid_mod.UUID(appointment_id),
+            phone,
+            patient_name,
+            json.dumps({
+                "call_type": "reminder_2h",
+                "patient_name": patient_name,
+                "doctor_name": doctor_name,
+            }),
+            scheduled_at,
+            tenant_slug,
+        )
+    return True

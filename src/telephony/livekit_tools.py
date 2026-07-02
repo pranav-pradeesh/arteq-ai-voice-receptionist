@@ -562,6 +562,20 @@ try:
                 )
             except Exception as exc:
                 logger.warning("tool_book_sms_alert_failed", error=str(exc))
+            try:
+                from src.db.queries import enqueue_same_day_2h_reminder
+                hospital_slug = _ud(context, "hospital_ctx") and _ud(context, "hospital_ctx").slug or "default"
+                await enqueue_same_day_2h_reminder(
+                    appointment_id=appt_id,
+                    hospital_id=hospital_id,
+                    phone=caller_phone,
+                    patient_name=patient_name,
+                    doctor_name=resolved_name,
+                    slot_time=slot,
+                    tenant_slug=hospital_slug,
+                )
+            except Exception as exc:
+                logger.warning("tool_book_2h_reminder_enqueue_failed", error=str(exc))
 
         asyncio.create_task(_side_effects())
 
