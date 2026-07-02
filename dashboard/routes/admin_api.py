@@ -213,12 +213,40 @@ async def _assert_hospital_access(payload: dict, hospital_id: str) -> None:
 
 
 # Per-IP brute-force guard: max 5 failed attempts per 10-minute window.
+# Backed by Redis so the count is shared across uvicorn workers and survives
+# restarts; falls back to the old in-process dict if Redis is unavailable.
 _login_failures: dict[str, list[float]] = {}
 _LOGIN_MAX = 5
 _LOGIN_WINDOW = 600  # seconds
 
+_rl_redis = None
 
-def _login_rate_ok(ip: str) -> bool:
+
+def _get_rl_redis():
+    global _rl_redis
+    if _rl_redis is None:
+        url = getattr(settings, "REDIS_URL", "") or ""
+        if not url:
+            return None
+        try:
+            import redis.asyncio as _r
+            _rl_redis = _r.from_url(
+                url, decode_responses=True,
+                socket_timeout=1.0, socket_connect_timeout=1.0,
+            )
+        except Exception:
+            return None
+    return _rl_redis
+
+
+async def _login_rate_ok(ip: str) -> bool:
+    r = _get_rl_redis()
+    if r is not None:
+        try:
+            n = await r.get(f"rl:login:{ip}")
+            return int(n or 0) < _LOGIN_MAX
+        except Exception:
+            pass
     import time
     now = time.monotonic()
     failures = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
@@ -228,7 +256,17 @@ def _login_rate_ok(ip: str) -> bool:
     return True
 
 
-def _login_record_failure(ip: str) -> None:
+async def _login_record_failure(ip: str) -> None:
+    r = _get_rl_redis()
+    if r is not None:
+        try:
+            key = f"rl:login:{ip}"
+            n = await r.incr(key)
+            if n == 1:
+                await r.expire(key, _LOGIN_WINDOW)
+            return
+        except Exception:
+            pass
     import time
     now = time.monotonic()
     failures = [t for t in _login_failures.get(ip, []) if now - t < _LOGIN_WINDOW]
@@ -243,7 +281,7 @@ def _login_record_failure(ip: str) -> None:
 @router.post("/login")
 async def login(body: LoginIn, request: Request):
     ip = (request.client.host if request.client else "") or "unknown"
-    if not _login_rate_ok(ip):
+    if not await _login_rate_ok(ip):
         raise HTTPException(status_code=429, detail="Too many failed attempts — try again later")
 
     identifier = (body.username or body.email or "").lower().strip()
@@ -256,14 +294,14 @@ async def login(body: LoginIn, request: Request):
                 identifier,
             )
         if not user or not user["active"]:
-            _login_record_failure(ip)
+            await _login_record_failure(ip)
             raise HTTPException(status_code=401, detail="Invalid username or password")
         try:
             ok = _bcrypt.checkpw(body.password.encode()[:72], user["password_hash"].encode())
         except Exception:
             ok = False
         if not ok:
-            _login_record_failure(ip)
+            await _login_record_failure(ip)
             raise HTTPException(status_code=401, detail="Invalid username or password")
         exp = datetime.now(timezone.utc) + timedelta(
             minutes=getattr(settings, "DASHBOARD_JWT_EXPIRE_MINUTES", 720)
@@ -280,16 +318,19 @@ async def login(body: LoginIn, request: Request):
                 "SELECT tenant_slug FROM user_tenants WHERE user_id = $1", user["id"]
             )
         tenants = [r["tenant_slug"] for r in rows]
+        # Mint the user's REAL role. Minting a blanket "hospital_admin" let
+        # receptionist/viewer accounts bypass role-based write control.
+        _role = user["role"] or "viewer"
         token = jwt.encode(
-            {"sub": user["email"], "role": "hospital_admin", "tenants": tenants, "exp": exp},
+            {"sub": user["email"], "role": _role, "tenants": tenants, "exp": exp},
             secret, algorithm=ALGORITHM,
         )
-        return {"access_token": token, "token_type": "bearer", "role": "hospital_admin", "tenants": tenants}
+        return {"access_token": token, "token_type": "bearer", "role": _role, "tenants": tenants}
 
     admin_pw = getattr(settings, "DASHBOARD_ADMIN_PASSWORD", "admin")
     import hmac as _hmac
     if not _hmac.compare_digest(body.password.encode(), (admin_pw or "").encode()):
-        _login_record_failure(ip)
+        await _login_record_failure(ip)
         raise HTTPException(status_code=401, detail="Incorrect password")
     return {"access_token": _create_token(), "token_type": "bearer", "role": "super_admin", "tenants": []}
 

@@ -238,12 +238,41 @@ async def metrics():
 # Per-IP sliding-window guard so the unauthenticated token endpoint can't be
 # abused to spin up unlimited agent rooms (each room costs STT/LLM/TTS spend).
 _token_hits: dict[str, list[float]] = {}
+_token_redis = None
 
 
-def _token_rate_ok(client_ip: str) -> bool:
+def _get_token_redis():
+    global _token_redis
+    if _token_redis is None:
+        url = getattr(settings, "REDIS_URL", "") or ""
+        if not url:
+            return None
+        try:
+            import redis.asyncio as _r
+            _token_redis = _r.from_url(
+                url, decode_responses=True,
+                socket_timeout=1.0, socket_connect_timeout=1.0,
+            )
+        except Exception:
+            return None
+    return _token_redis
+
+
+async def _token_rate_ok(client_ip: str) -> bool:
+    """Redis-backed fixed window (shared across workers); in-memory fallback."""
+    window = settings.TOKEN_RATE_WINDOW_SECONDS
+    r = _get_token_redis()
+    if r is not None:
+        try:
+            key = f"rl:token:{client_ip}"
+            n = await r.incr(key)
+            if n == 1:
+                await r.expire(key, window)
+            return n <= settings.TOKEN_RATE_LIMIT
+        except Exception:
+            pass
     import time
     now = time.monotonic()
-    window = settings.TOKEN_RATE_WINDOW_SECONDS
     hits = [t for t in _token_hits.get(client_ip, []) if now - t < window]
     if len(hits) >= settings.TOKEN_RATE_LIMIT:
         _token_hits[client_ip] = hits
@@ -277,7 +306,7 @@ async def livekit_token(request: Request, slug: str = "default", participant: st
         raise HTTPException(status_code=503, detail="LiveKit not configured")
 
     client_ip = (request.client.host if request.client else "") or "unknown"
-    if not _token_rate_ok(client_ip):
+    if not await _token_rate_ok(client_ip):
         logger.warning("token_rate_limited", ip=client_ip, slug=slug)
         raise HTTPException(status_code=429, detail="Too many requests")
 

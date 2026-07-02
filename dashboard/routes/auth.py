@@ -33,12 +33,12 @@ async def auth_login(body: LoginIn, request: Request):
     """Login with admin password and receive a JWT."""
     from dashboard.routes.admin_api import _create_token, _login_rate_ok, _login_record_failure
     ip = (request.client.host if request.client else "") or "unknown"
-    if not _login_rate_ok(ip):
+    if not await _login_rate_ok(ip):
         raise HTTPException(status_code=429, detail="Too many failed attempts — try again later")
     admin_pw = getattr(settings, "DASHBOARD_ADMIN_PASSWORD", "admin")
     import hmac as _hmac
     if not _hmac.compare_digest(body.password.encode(), (admin_pw or "").encode()):
-        _login_record_failure(ip)
+        await _login_record_failure(ip)
         raise HTTPException(status_code=401, detail="Incorrect password")
     return {"access_token": _create_token(), "token_type": "bearer"}
 
