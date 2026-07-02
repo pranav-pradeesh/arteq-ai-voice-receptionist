@@ -147,6 +147,24 @@ def _ud(context, key: str, default=None):
             return default
 
 
+
+def _note_tool_failure(context, reason: str) -> None:
+    """Count consecutive tool failures for this call; after 2 the caller is
+    warm-transferred to reception instead of looping through more errors."""
+    try:
+        ud = getattr(context, "userdata", None) or {}
+        n = ud.get("tool_failures", 0) + 1
+        ud["tool_failures"] = n
+        logger.warning("tool_failure", n=n, reason=reason)
+        handoff = ud.get("auto_handoff")
+        if n >= 2 and handoff is not None and not ud.get("handoff_started"):
+            ud["handoff_started"] = True
+            import asyncio as _aio
+            _aio.create_task(handoff(f"tool_failures:{reason}"))
+    except Exception:
+        pass
+
+
 def _mark_intent(context, intent: str) -> None:
     """Record that a tool ran this call, so the call log's `intents` column
     reflects what actually happened (booked / cancelled / emergency / …)."""
@@ -647,7 +665,8 @@ try:
 
             ok = await cancel_appointment_by_id(str(target["id"]), hospital_id)
             if not ok:
-                return "Could not cancel that appointment — please contact the front desk."
+                _note_tool_failure(context, "cancel_appointment")
+            return "Could not cancel that appointment — please contact the front desk."
 
             doc  = target.get("doctor_name") or doctor_name or "the doctor"
             date = target["slot_time"].strftime("%d %B") if target.get("slot_time") else appointment_date
@@ -1027,6 +1046,7 @@ try:
                 slots = await get_available_slots(doctor_id, date, hospital_id)
             except Exception as exc:
                 logger.warning("tool_check_availability_failed", error=str(exc))
+                _note_tool_failure(context, "check_availability")
                 return "Could not check availability right now — please try a specific time."
 
         if not slots:
@@ -1133,6 +1153,7 @@ try:
 
             ok = await reschedule_appointment_by_id(str(target["id"]), new_slot, hospital_id)
             if not ok:
+                _note_tool_failure(context, "reschedule_appointment")
                 return "Could not reschedule that appointment — please contact the front desk."
 
             doc = target.get("doctor_name") or doctor_name or "the doctor"
@@ -1366,6 +1387,7 @@ try:
             appts = await get_appointments_by_phone(caller_phone, hospital_id)
         except Exception as exc:
             logger.warning("tool_get_my_appointments_failed", error=str(exc))
+            _note_tool_failure(context, "get_my_appointments")
             return "I couldn't look that up right now — please try again in a moment."
         if not appts:
             return ("No active appointment is on record for this number. "

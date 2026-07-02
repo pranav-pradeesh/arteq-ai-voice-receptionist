@@ -2281,6 +2281,9 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as exc:
             _log.error(f"session_error_handler_failed {exc}")
 
+    # Tools escalate through the same handoff path (see _note_tool_failure).
+    session_data["auto_handoff"] = _handoff_to_reception
+
     # Track whether Arya is currently speaking, and when she last FINISHED speaking
     # (entered the listening state). The inactivity watchdog uses this so the
     # "are you there?" nudge starts counting only once she is actually waiting for

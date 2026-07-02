@@ -36,7 +36,8 @@ async def auth_login(body: LoginIn, request: Request):
     if not _login_rate_ok(ip):
         raise HTTPException(status_code=429, detail="Too many failed attempts — try again later")
     admin_pw = getattr(settings, "DASHBOARD_ADMIN_PASSWORD", "admin")
-    if body.password != admin_pw:
+    import hmac as _hmac
+    if not _hmac.compare_digest(body.password.encode(), (admin_pw or "").encode()):
         _login_record_failure(ip)
         raise HTTPException(status_code=401, detail="Incorrect password")
     return {"access_token": _create_token(), "token_type": "bearer"}
