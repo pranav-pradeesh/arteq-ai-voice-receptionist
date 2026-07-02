@@ -92,18 +92,34 @@ def test_derive_slug():
 
 
 def test_token_rate_limiter():
-    """Per-IP token guard allows up to the limit, then blocks within the window."""
+    """Per-IP token guard allows up to the limit, then blocks within the window.
+
+    _token_rate_ok is async (Redis-backed, shared across workers); with no
+    REDIS_URL reachable in the unit env it exercises the in-memory fallback.
+    """
+    import asyncio
     from src import main
+
     main._token_hits.clear()
-    limit = main.settings.TOKEN_RATE_LIMIT
-    ip = "1.2.3.4"
-    for _ in range(limit):
-        assert main._token_rate_ok(ip) is True
-    # Next request in the same window is rejected.
-    assert main._token_rate_ok(ip) is False
-    # A different IP is unaffected.
-    assert main._token_rate_ok("5.6.7.8") is True
-    main._token_hits.clear()
+    main._token_redis = None          # force in-memory fallback path
+
+    async def run():
+        limit = main.settings.TOKEN_RATE_LIMIT
+        ip = "1.2.3.4"
+        for _ in range(limit):
+            assert await main._token_rate_ok(ip) is True
+        # Next request in the same window is rejected.
+        assert await main._token_rate_ok(ip) is False
+        # A different IP is unaffected.
+        assert await main._token_rate_ok("5.6.7.8") is True
+
+    _saved = main.settings.REDIS_URL
+    main.settings.REDIS_URL = ""      # keep _get_token_redis() returning None
+    try:
+        asyncio.run(run())
+    finally:
+        main.settings.REDIS_URL = _saved
+        main._token_hits.clear()
 
 
 def test_features_normalize_over_tier():
