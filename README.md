@@ -89,7 +89,7 @@ Caller dials the hospital's Vobiz DID
 | `livekit` | self-hosted LiveKit server (WebRTC + SIP) |
 | `livekit-sip` | bridges Vobiz SIP calls into LiveKit rooms |
 | `egress` | records calls to `/recordings/<call_id>.ogg` |
-| `redis` | live-call event bus (agent -> dashboard WebSocket) + leader election |
+| `redis` | live-call event bus (agent -> dashboard WebSocket) |
 | `postgres` | bundled (unused in prod — Supabase is the live DB) |
 
 **Database:** Supabase Postgres, reached over a host `socat` IPv4->IPv6 tunnel
