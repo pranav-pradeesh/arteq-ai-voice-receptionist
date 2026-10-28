@@ -5,11 +5,42 @@
 > data-driven by hospital slug. The goal is to **replace the IVR menu** with a
 > natural, real-time conversation — no "press 1 for…", no scripts.
 
+[![CI](https://github.com/pranav-pradeesh/arteq-ai-voice-receptionist/actions/workflows/ci.yml/badge.svg)](https://github.com/pranav-pradeesh/arteq-ai-voice-receptionist/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-000000?style=flat-square&logo=next.js&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)
+
 **Pipeline:** Vobiz SIP → self-hosted LiveKit (WebRTC/SIP) → Sarvam Saarika STT →
 Google Gemini → Sarvam Bulbul v3 TTS → caller.
 **Data:** Supabase PostgreSQL (over a socat IPv4→IPv6 tunnel).
 **Languages:** Malayalam-first; English, Hindi, Tamil, Kannada, Telugu — detected
 per caller and locked for the call.
+
+## At a glance
+
+Piloted on the phone line of a multi-specialty hospital in Kerala (23 departments, 57 doctors).
+A caller rings the hospital's number and talks to the agent in their own language. It answers
+questions about doctors, timings and fees, checks live availability, books, reschedules or cancels
+appointments, transfers to staff, and escalates emergencies. Staff watch calls and bookings live on a dashboard.
+
+**Engineering problems this project solves**
+
+| Problem | Approach |
+| --- | --- |
+| Real-time conversation over a phone line (8 kHz, noisy) | Streaming STT → LLM → TTS inside a LiveKit room; in-process DTLN noise suppression and Silero VAD for turn detection |
+| Many hospitals, one deployment | Tenant = slug in the room name (`{slug}-call-{uuid}`). One agent worker loads that tenant's doctors, hours, FAQs and language per call. No per-tenant process, port or container |
+| Fast availability answers mid-call | Slot lookups across doctors and days fan out concurrently with `asyncio.gather` instead of running one query per doctor in sequence |
+| Background jobs with multiple API workers | Reminders, callbacks and retry queues run under leader election: a session-level Postgres advisory lock (`pg_try_advisory_lock`) makes exactly one Uvicorn worker the scheduler, so a reminder is never sent twice |
+| Live dashboard | Agent publishes call events to a Redis bus, and the FastAPI backend fans them out to the Next.js dashboard over WebSockets |
+| LLM taking real actions safely | The model acts only through 16 typed tools (`check_availability`, `book_appointment`, `reschedule_appointment`, `transfer_to_department`, `alert_emergency`…) that validate against the database. It never writes to the DB directly |
+| IPv4-only VPS, IPv6-only managed Postgres | Host-level `socat` tunnel run as a systemd service |
+| Health data in India | Consent, DPDP and PII handling documented in [`docs/compliance/`](docs/compliance) |
+
+**Quality:** 69 pytest tests plus Vitest suites for the dashboard, with `ruff`, `pytest`, a typecheck and `vitest` gating every push and PR in [CI](.github/workflows/ci.yml).
+**Deploy:** nine Docker Compose services (nginx, FastAPI, agent worker, Next.js, LiveKit, LiveKit SIP, egress, Redis, Postgres) on one VPS.
 
 ---
 
