@@ -26,7 +26,13 @@ Options:
                  LiveKit inbound SIP trunk + dispatch rule so incoming calls to
                  that number reach the agent. Requires running inside /app.
 """
-import argparse, asyncio, asyncpg, os, sys, uuid, json
+import argparse
+import asyncio
+import asyncpg
+import os
+import sys
+import uuid
+import json
 from datetime import datetime, timedelta, timezone
 
 import bcrypt

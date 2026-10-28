@@ -314,7 +314,8 @@ async def save_patient(hospital_id: str, name: str, phone: str) -> Optional[str]
                         name, existing,
                     )
                 return existing
-            import datetime as _dtp, uuid as _up
+            import datetime as _dtp
+            import uuid as _up
             pid = f"P-{_dtp.datetime.utcnow().strftime('%y%m%d')}-{_up.uuid4().hex[:6]}"
             await conn.execute(
                 "INSERT INTO patients (id, hospital_id, name, phone) VALUES ($1,$2,$3,$4) "

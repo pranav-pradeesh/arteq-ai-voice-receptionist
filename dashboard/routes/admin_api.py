@@ -3218,8 +3218,6 @@ async def import_appointments(
         if not doctor:
             raise HTTPException(status_code=404, detail="Doctor not found for this hospital")
 
-        slug = hosp["slug"] or "default"
-        doctor_name = doctor["name"] or ""
         imported = 0
         patients_added = 0
         skipped: list[dict] = []

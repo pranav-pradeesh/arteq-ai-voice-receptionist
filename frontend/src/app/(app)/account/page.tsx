@@ -19,17 +19,17 @@ export default function AccountPage() {
   const mut = useMutation({
     mutationFn: () => api.changePassword(oldP, newP),
     onSuccess: () => {
-      toast("Password updated", "success");
+      toast("Password updated", "ok");
       setOldP(""); setNewP(""); setConfirm("");
     },
     onError: (e: unknown) =>
-      toast((e as { message?: string })?.message || "Could not update password", "error"),
+      toast((e as { message?: string })?.message || "Could not update password", "err"),
   });
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (newP.length < 8) { toast("New password must be at least 8 characters", "error"); return; }
-    if (newP !== confirm) { toast("Passwords do not match", "error"); return; }
+    if (newP.length < 8) { toast("New password must be at least 8 characters", "err"); return; }
+    if (newP !== confirm) { toast("Passwords do not match", "err"); return; }
     mut.mutate();
   }
 

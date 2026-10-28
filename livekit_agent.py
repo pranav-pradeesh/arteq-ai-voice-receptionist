@@ -48,7 +48,9 @@ from livekit.agents import (
 from livekit.agents.voice.room_io import AudioInputOptions, RoomOptions
 from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.agents import llm as agents_llm  # ChatContext, ChatMessage types
-from livekit.plugins import noise_cancellation, openai, sarvam, silero
+# noise_cancellation is imported for its side effect: LiveKit plugins register
+# on import, which `download-files` relies on. The agent itself uses DTLN.
+from livekit.plugins import noise_cancellation, openai, sarvam, silero  # noqa: F401
 from openai import AsyncClient as _AsyncOpenAI  # raw SDK, for custom-header Sarvam client
 
 load_dotenv()
@@ -1631,11 +1633,14 @@ class _LatencyMeter:
                 self._sum[key] += float(val)
                 self._cnt[key] += 1
         # Per-turn latency line (each turn, not just the call average).
-        _e = metrics.get("end_of_turn_delay"); _l = metrics.get("llm_node_ttft"); _t = metrics.get("tts_node_ttfb")
+        _e = metrics.get("end_of_turn_delay")
+        _l = metrics.get("llm_node_ttft")
+        _t = metrics.get("tts_node_ttfb")
         _vals = [v for v in (_e, _l, _t) if isinstance(v, (int, float)) and v > 0]
         if _vals:
             self._turn = getattr(self, "_turn", 0) + 1
-            _ms = lambda v: round(v * 1000) if isinstance(v, (int, float)) and v > 0 else 0
+            def _ms(v):
+                return round(v * 1000) if isinstance(v, (int, float)) and v > 0 else 0
             print(f"[arteq] turn_latency #{self._turn} total={round(sum(_vals)*1000)}ms "
                   f"eou={_ms(_e)}ms llm={_ms(_l)}ms tts={_ms(_t)}ms", file=sys.stderr, flush=True)
         # Token usage key names vary across livekit-agents versions, so match

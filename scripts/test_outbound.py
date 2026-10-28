@@ -15,7 +15,11 @@ Usage:
   python test_outbound.py --phone +9198XXXXXXXX --mode now   --name "Pranav"
   python test_outbound.py --phone +9198XXXXXXXX --mode queue --name "Pranav"
 """
-import argparse, asyncio, asyncpg, os, json, uuid
+import argparse
+import asyncio
+import asyncpg
+import os
+import json
 
 
 def parse():

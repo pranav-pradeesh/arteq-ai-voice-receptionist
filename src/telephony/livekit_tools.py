@@ -211,7 +211,8 @@ def _ml_part(h: int) -> str:
 def _ml_time(hhmm: str) -> str:
     """"09:45" -> "രാവിലെ ഒമ്പത് മണി നാല്പത്തിയഞ്ച്" (spoken Malayalam, not digits)."""
     try:
-        h = int(hhmm[:2]); m = int(hhmm[3:5])
+        h = int(hhmm[:2])
+        m = int(hhmm[3:5])
     except Exception:
         return hhmm
     h12 = h % 12 or 12
@@ -288,7 +289,8 @@ def _spoken_appt_date(date_str: str, ml: bool) -> str:
 def _spoken_time_en(hhmm: str) -> str:
     """"14:30" -> "2:30 PM". Returns the input unchanged if not HH:MM."""
     try:
-        h = int(hhmm[:2]); m = int(hhmm[3:5])
+        h = int(hhmm[:2])
+        m = int(hhmm[3:5])
     except Exception:
         return hhmm
     ap = "AM" if h < 12 else "PM"
@@ -364,11 +366,13 @@ def _doctor_name_candidates(hospital_ctx, name: str) -> list:
             c_tokens = set(_toks(c))
             if q == c:
                 if str(doc.id) not in seen:
-                    seen.add(str(doc.id)); exact.append(doc)
+                    seen.add(str(doc.id))
+                    exact.append(doc)
                 break
             if (q in c_tokens) or (c in q_tokens) or (q_tokens and q_tokens <= c_tokens):
                 if str(doc.id) not in seen:
-                    seen.add(str(doc.id)); partial.append(doc)
+                    seen.add(str(doc.id))
+                    partial.append(doc)
                 break
     # An exact full-name hit is unambiguous; otherwise return all partials.
     return exact if exact else partial
