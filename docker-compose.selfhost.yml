@@ -158,7 +158,7 @@ services:
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_BASE: http://app:8000
-      NEXTAUTH_URL: http://YOUR_SERVER_IP
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL in .env (e.g. https://your-domain)}
       PORT: "3000"
       HOSTNAME: 0.0.0.0
     expose:

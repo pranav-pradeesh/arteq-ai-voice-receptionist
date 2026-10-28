@@ -34,4 +34,4 @@ echo "==> [5/5] Status:"
 $DC ps
 
 echo ""
-echo "Update complete. Dashboard: http://YOUR_SERVER_IP/login"
+echo "Update complete. Dashboard: $(grep -E '^NEXTAUTH_URL=' .env 2>/dev/null | cut -d= -f2- || echo 'http://YOUR_SERVER')/login"

@@ -152,7 +152,7 @@ async def main():
         print("\n=== Tenant ready ===")
         print(f"  Hospital : {a.name} ({slug}) — {sub_status}"
               + (f", trial until {expires:%Y-%m-%d}" if expires else ""))
-        print(f"  Login    : username={username}  (dashboard at http://YOUR_SERVER_IP/login)")
+        print(f"  Login    : username={username}  (dashboard at {os.environ.get('NEXTAUTH_URL', 'http://YOUR_SERVER')}/login)")
         print(f"  Agent    : {a.agent_name} [{a.language}], tier={a.tier}, plan={a.plan}")
         if sip_line:
             print(sip_line)

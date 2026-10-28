@@ -12,6 +12,7 @@ Routes:
 """
 from __future__ import annotations
 
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -175,7 +176,10 @@ async def root():
 async def talk(request: Request):
     """Serves the browser voice client (mic → LiveKit → agent)."""
     if _templates:
-        return _templates.TemplateResponse("talk.html", {"request": request})
+        return _templates.TemplateResponse(
+            "talk.html",
+            {"request": request, "admin_prefix": os.environ.get("ADMIN_PREFIX", "/admin")},
+        )
     return HTMLResponse("<h1>Voice client template not found</h1>", status_code=500)
 
 
